@@ -9,7 +9,11 @@ type Props = {
   metadata?: WsMetadata;
 };
 
-marked.setOptions({ breaks: true, gfm: true });
+marked.setOptions({ breaks: false, gfm: true });
+
+const normalizeWhitespace = (text: string): string => {
+  return text.replace(/\n{3,}/g, '\n\n').trim();
+};
 
 const formatMetadata = (m: WsMetadata): string => {
   const secs = (m.elapsed_ms / 1000).toFixed(1);
@@ -27,7 +31,10 @@ const formatMetadata = (m: WsMetadata): string => {
 
 export default function ChatMessage(props: Props) {
   const showMetadata = () => props.user === 'Bot' && props.metadata && !props.streaming;
-  const html = createMemo(() => marked.parse(props.msg) as string);
+  const html = createMemo(() => {
+    const parsed = marked.parse(normalizeWhitespace(props.msg)) as string;
+    return parsed.trim();
+  });
 
   return (
     <div

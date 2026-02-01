@@ -15,6 +15,7 @@ type Client interface {
 type StreamClient interface {
 	Client
 	ChatStream(ctx context.Context, model string, system, user string) (<-chan StreamChunk, error)
+	ChatStreamWithMessages(ctx context.Context, model string, system string, msgs []Message) (<-chan StreamChunk, error)
 }
 
 type ClientConfig struct {

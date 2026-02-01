@@ -3,8 +3,8 @@ root = "."
 tmp_dir = "tmp"
 
 [build]
-cmd = "go build -o ./tmp/fissio-server ./cmd/fissio-server"
-bin = "./tmp/fissio-server"
+cmd = "go build -o ./tmp/server ./cmd/server"
+bin = "./tmp/server"
 include_ext = ["go"]
 exclude_dir = ["tmp", "web", "editor/dist", "node_modules"]
 delay = 1000

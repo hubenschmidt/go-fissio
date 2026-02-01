@@ -12,9 +12,11 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - OLLAMA_URL=http://host.docker.internal:11434
+      - FISSIO_DATA_DIR=/data
     volumes:
       - .:/app
       - go-mod-cache:/go/pkg/mod
+      - fissio-data:/data
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8000/health"]
       interval: 5s
@@ -24,12 +26,12 @@ services:
     restart: unless-stopped
 
   client:
-    build: ./web/client
+    build: ./client
     ports:
       - "3001:3001"
       - "24678:24678"
     volumes:
-      - ./web/client:/app
+      - ./client:/app
       - /app/node_modules
     command: npm run dev -- --host
     depends_on:
@@ -39,3 +41,4 @@ services:
 
 volumes:
   go-mod-cache:
+  fissio-data:

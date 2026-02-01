@@ -7,11 +7,10 @@ tmp/
 
 # Node / SolidJS (dev only, not embedded assets)
 **/node_modules/
-web/client/dist/
+client/dist/
 
-# Database
-**/data/*.db
-**/data/*.db-journal
+# Data persistence
+data/
 
 # IDE
 .idea/

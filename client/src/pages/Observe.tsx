@@ -1,4 +1,4 @@
-import { createSignal, createResource, For, Show } from 'solid-js';
+import { createSignal, createResource, For, Show, onCleanup } from 'solid-js';
 import { A } from '@solidjs/router';
 import DataTable, { Column } from '../lib/components/DataTable';
 
@@ -76,6 +76,8 @@ export default function Observe() {
   const [metrics] = createResource(fetchMetrics);
   const [selectedTrace, setSelectedTrace] = createSignal<TraceRecord | null>(null);
   const [traceDetail, setTraceDetail] = createSignal<{ trace: TraceRecord; spans: SpanRecord[] } | null>(null);
+  const [panelWidth, setPanelWidth] = createSignal(400);
+  const [isResizing, setIsResizing] = createSignal(false);
 
   const selectTrace = async (trace: TraceRecord) => {
     setSelectedTrace(trace);
@@ -87,6 +89,28 @@ export default function Observe() {
     setSelectedTrace(null);
     setTraceDetail(null);
   };
+
+  const startResize = (e: MouseEvent) => {
+    e.preventDefault();
+    setIsResizing(true);
+  };
+
+  const handleMouseMove = (e: MouseEvent) => {
+    if (!isResizing()) return;
+    const newWidth = window.innerWidth - e.clientX;
+    setPanelWidth(Math.max(300, Math.min(800, newWidth)));
+  };
+
+  const stopResize = () => setIsResizing(false);
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', stopResize);
+    onCleanup(() => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', stopResize);
+    });
+  }
 
   const columns: Column<TraceRecord>[] = [
     {
@@ -184,7 +208,8 @@ export default function Observe() {
 
           <Show when={traceDetail()}>
             {(detail) => (
-              <div class="trace-detail-panel">
+              <div class="trace-detail-panel" style={{ width: `${panelWidth()}px` }}>
+                <div class="resize-handle" onMouseDown={startResize} />
                 <div class="trace-detail-header">
                   <h3>Trace Detail</h3>
                   <button class="trace-detail-close" onClick={closeDetail}>&times;</button>

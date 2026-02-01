@@ -126,7 +126,7 @@ type (
 )
 
 // NewServer creates a new API server.
-func NewServer(cfg ServerConfig) *Server {
+func NewServer(cfg ServerConfig) (*Server, error) {
 	return server.New(cfg)
 }
 

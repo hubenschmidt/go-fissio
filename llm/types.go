@@ -31,6 +31,7 @@ type StreamChunk struct {
 	ToolCalls []core.ToolCall `json:"tool_calls,omitempty"`
 	Done      bool            `json:"done"`
 	Error     error           `json:"error,omitempty"`
+	Usage     *Usage          `json:"usage,omitempty"`
 }
 
 func (r *ChatResponse) HasToolCalls() bool {

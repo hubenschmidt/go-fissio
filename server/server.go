@@ -1,20 +1,23 @@
 package server
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 
 	"github.com/hubenschmidt/go-fissio/llm"
+	"github.com/hubenschmidt/go-fissio/server/store"
 	"github.com/hubenschmidt/go-fissio/tools"
 )
 
 // Config configures a new Server instance.
 type Config struct {
-	Client    llm.Client
-	Registry  *tools.Registry
-	Models    []ModelInfo
-	Templates []PipelineInfo
-	OllamaURL string // Optional: URL for Ollama model discovery
+	Client      llm.Client
+	Registry    *tools.Registry
+	Models      []ModelInfo
+	Templates   []PipelineInfo
+	OllamaURL   string // Optional: URL for Ollama model discovery
+	DatabaseDSN string // Optional: database connection string (postgres:// or sqlite path)
 }
 
 // Server is an HTTP server for the fissio agent framework.
@@ -23,12 +26,12 @@ type Server struct {
 	registry  *tools.Registry
 	models    []ModelInfo
 	templates []PipelineInfo
-	pipelines *PipelineStore
-	traces    *TraceStore
+	pipelines store.PipelineStore
+	traces    store.TraceStore
 }
 
 // New creates a new Server with the given configuration.
-func New(cfg Config) *Server {
+func New(cfg Config) (*Server, error) {
 	registry := cfg.Registry
 	if registry == nil {
 		registry = tools.DefaultRegistry
@@ -63,14 +66,37 @@ func New(cfg Config) *Server {
 		templates = defaultTemplates()
 	}
 
+	// Initialize database stores
+	traceStore, pipelineStore, err := store.NewStores(cfg.DatabaseDSN)
+	if err != nil {
+		return nil, fmt.Errorf("initialize stores: %w", err)
+	}
+
+	log.Printf("[store] Initialized database storage")
+
 	return &Server{
 		client:    cfg.Client,
 		registry:  registry,
 		models:    models,
 		templates: templates,
-		pipelines: newPipelineStore(),
-		traces:    newTraceStore(),
+		pipelines: pipelineStore,
+		traces:    traceStore,
+	}, nil
+}
+
+// Close closes the server and releases resources.
+func (s *Server) Close() error {
+	var errs []error
+	if err := s.traces.Close(); err != nil {
+		errs = append(errs, err)
 	}
+	if err := s.pipelines.Close(); err != nil {
+		errs = append(errs, err)
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("close stores: %v", errs)
+	}
+	return nil
 }
 
 // Handler returns an http.Handler for the API routes.

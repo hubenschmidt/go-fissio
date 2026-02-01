@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -19,10 +20,15 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleInit(w http.ResponseWriter, r *http.Request) {
+	configs, err := s.pipelines.List(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	resp := InitResponse{
 		Models:    s.models,
 		Templates: s.templates,
-		Configs:   s.pipelines.List(),
+		Configs:   configs,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
@@ -115,11 +121,33 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 
-	// Record trace
-	s.traces.Add(TraceInfo{
-		TraceID:           fmt.Sprintf("trace_%d", time.Now().UnixNano()),
-		PipelineID:        rp.Nodes[0].ID,
-		PipelineName:      "Pipeline",
+	// Convert engine spans to server spans
+	traceID := fmt.Sprintf("trace_%d", time.Now().UnixNano())
+	spans := make([]SpanInfo, len(result.Spans))
+	for i, s := range result.Spans {
+		spans[i] = SpanInfo{
+			SpanID:       s.SpanID,
+			TraceID:      traceID,
+			NodeID:       s.NodeID,
+			NodeType:     s.NodeType,
+			StartTime:    s.StartTime,
+			EndTime:      s.EndTime,
+			Input:        s.Input,
+			Output:       s.Output,
+			InputTokens:  s.InputTokens,
+			OutputTokens: s.OutputTokens,
+		}
+	}
+
+	// Record trace with spans
+	pipelineName := rp.Name
+	if pipelineName == "" {
+		pipelineName = rp.ID
+	}
+	if err := s.traces.Add(context.Background(), TraceInfo{
+		TraceID:           traceID,
+		PipelineID:        rp.ID,
+		PipelineName:      pipelineName,
 		Timestamp:         start.UnixMilli(),
 		Input:             req.Message,
 		Output:            result.Content,
@@ -128,13 +156,21 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		TotalOutputTokens: totalOut,
 		TotalToolCalls:    0,
 		Status:            "success",
-	})
+		Spans:             spans,
+	}); err != nil {
+		log.Printf("[trace] Failed to record trace: %v", err)
+	}
 }
 
 func (s *Server) handleDirectChat(w http.ResponseWriter, r *http.Request, req ChatRequest, flusher http.Flusher) {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
+
+	log.Println("╔══════════════════════════════════════════════════════════════")
+	log.Println("║ DIRECT CHAT")
+	log.Printf("║ Input: %.50s...", req.Message)
+	log.Println("╠══════════════════════════════════════════════════════════════")
 
 	// Use provided system prompt or default
 	systemPrompt := "You are a helpful assistant."
@@ -148,48 +184,80 @@ func (s *Server) handleDirectChat(w http.ResponseWriter, r *http.Request, req Ch
 		messages = append(messages, llm.Message{Role: h.Role, Content: h.Content})
 	}
 	messages = append(messages, llm.Message{Role: "user", Content: req.Message})
-	resp, err := s.client.ChatWithMessages(ctx, "gpt-4", systemPrompt, messages)
-	elapsed := time.Since(start)
 
+	// Try streaming if client supports it
+	uc, ok := s.client.(*llm.UnifiedClient)
+	if !ok {
+		writeSSE(w, flusher, "stream", map[string]any{"content": "Error: streaming not supported"})
+		writeSSE(w, flusher, "end", nil)
+		return
+	}
+
+	stream, err := uc.ChatStreamWithMessages(ctx, "gpt-4", systemPrompt, messages)
 	if err != nil {
 		writeSSE(w, flusher, "stream", map[string]any{"content": "Error: " + err.Error()})
 		writeSSE(w, flusher, "end", nil)
-		s.traces.Add(TraceInfo{
+		if err := s.traces.Add(context.Background(), TraceInfo{
 			TraceID:        fmt.Sprintf("trace_%d", time.Now().UnixNano()),
 			PipelineID:     "direct",
 			PipelineName:   "Direct Chat",
 			Timestamp:      start.UnixMilli(),
 			Input:          req.Message,
 			Output:         "Error: " + err.Error(),
-			TotalElapsedMs: elapsed.Milliseconds(),
+			TotalElapsedMs: time.Since(start).Milliseconds(),
 			Status:         "error",
-		})
+		}); err != nil {
+			log.Printf("[trace] Failed to record trace: %v", err)
+		}
 		return
 	}
 
-	writeSSE(w, flusher, "stream", map[string]any{"content": resp.Content})
+	var fullContent string
+	var usage llm.Usage
+	for chunk := range stream {
+		if chunk.Error != nil {
+			writeSSE(w, flusher, "stream", map[string]any{"content": "Error: " + chunk.Error.Error()})
+			break
+		}
+		if chunk.Content != "" {
+			fullContent += chunk.Content
+			writeSSE(w, flusher, "stream", map[string]any{"content": chunk.Content})
+		}
+		if chunk.Usage != nil {
+			usage = *chunk.Usage
+		}
+	}
+
+	elapsed := time.Since(start)
+
+	log.Printf("║     ✓ Completed in %v", elapsed)
+	log.Printf("║     ← Response: %d chars, %d/%d tokens", len(fullContent), usage.PromptTokens, usage.CompletionTokens)
+	log.Println("╚══════════════════════════════════════════════════════════════")
+
 	writeSSE(w, flusher, "end", map[string]any{
 		"metadata": Metadata{
-			InputTokens:  resp.Usage.PromptTokens,
-			OutputTokens: resp.Usage.CompletionTokens,
+			InputTokens:  usage.PromptTokens,
+			OutputTokens: usage.CompletionTokens,
 			ElapsedMs:    elapsed.Milliseconds(),
 		},
 	})
 
 	// Record trace
-	s.traces.Add(TraceInfo{
+	if err := s.traces.Add(context.Background(), TraceInfo{
 		TraceID:           fmt.Sprintf("trace_%d", time.Now().UnixNano()),
 		PipelineID:        "direct",
 		PipelineName:      "Direct Chat",
 		Timestamp:         start.UnixMilli(),
 		Input:             req.Message,
-		Output:            resp.Content,
+		Output:            fullContent,
 		TotalElapsedMs:    elapsed.Milliseconds(),
-		TotalInputTokens:  resp.Usage.PromptTokens,
-		TotalOutputTokens: resp.Usage.CompletionTokens,
+		TotalInputTokens:  usage.PromptTokens,
+		TotalOutputTokens: usage.CompletionTokens,
 		TotalToolCalls:    0,
 		Status:            "success",
-	})
+	}); err != nil {
+		log.Printf("[trace] Failed to record trace: %v", err)
+	}
 }
 
 func writeSSE(w http.ResponseWriter, flusher http.Flusher, eventType string, data map[string]any) {
@@ -203,8 +271,13 @@ func writeSSE(w http.ResponseWriter, flusher http.Flusher, eventType string, dat
 }
 
 func (s *Server) handlePipelineList(w http.ResponseWriter, r *http.Request) {
+	pipelines, err := s.pipelines.List(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(s.pipelines.List())
+	json.NewEncoder(w).Encode(pipelines)
 }
 
 func (s *Server) handlePipelineSave(w http.ResponseWriter, r *http.Request) {
@@ -214,7 +287,7 @@ func (s *Server) handlePipelineSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.pipelines.Save(PipelineInfo{
+	err := s.pipelines.Save(r.Context(), PipelineInfo{
 		ID:          req.ID,
 		Name:        req.Name,
 		Description: req.Description,
@@ -222,6 +295,10 @@ func (s *Server) handlePipelineSave(w http.ResponseWriter, r *http.Request) {
 		Edges:       req.Edges,
 		Layout:      req.Layout,
 	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"success": true, "id": req.ID})
@@ -234,20 +311,28 @@ func (s *Server) handlePipelineDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.pipelines.Delete(req.ID)
+	if err := s.pipelines.Delete(r.Context(), req.ID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
 }
 
 func (s *Server) handleTraceList(w http.ResponseWriter, r *http.Request) {
+	traces, err := s.traces.List(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(TraceListResponse{Traces: s.traces.List()})
+	json.NewEncoder(w).Encode(TraceListResponse{Traces: traces})
 }
 
 func (s *Server) handleTraceGet(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	trace, ok := s.traces.Get(id)
-	if !ok {
+	trace, err := s.traces.Get(r.Context(), id)
+	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -257,17 +342,27 @@ func (s *Server) handleTraceGet(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleTraceDelete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	s.traces.Delete(id)
+	if err := s.traces.Delete(r.Context(), id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
 }
 
 func (s *Server) handleMetricsSummary(w http.ResponseWriter, r *http.Request) {
+	summary, err := s.traces.Summary(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(s.traces.Summary())
+	json.NewEncoder(w).Encode(summary)
 }
 
 type runtimePipeline struct {
+	ID    string        `json:"id"`
+	Name  string        `json:"name"`
 	Nodes []runtimeNode `json:"nodes"`
 	Edges []runtimeEdge `json:"edges"`
 }

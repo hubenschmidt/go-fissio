@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"fmt"
+	"log"
 	"time"
 
 	"github.com/hubenschmidt/go-fissio/config"
@@ -59,6 +61,11 @@ func NewEngine(pipeline *config.PipelineConfig, cfg EngineConfig) *Engine {
 func (e *Engine) Run(ctx context.Context, input string) (*EngineOutput, error) {
 	start := time.Now()
 
+	log.Println("╔══════════════════════════════════════════════════════════════")
+	log.Printf("║ PIPELINE: %s", e.pipeline.Name)
+	log.Printf("║ Input: %.50s...", input)
+	log.Println("╠══════════════════════════════════════════════════════════════")
+
 	entryNode := e.pipeline.EntryNode
 	if entryNode == "" {
 		entryNode = e.findEntryNode()
@@ -70,6 +77,8 @@ func (e *Engine) Run(ctx context.Context, input string) (*EngineOutput, error) {
 
 	execCtx := NewExecutionContext(NodeInput{Content: input})
 	outputs := make(map[string]NodeOutput)
+	var spans []Span
+	step := 0
 
 	currentNodes := []string{entryNode}
 	visited := make(map[string]bool)
@@ -88,16 +97,51 @@ func (e *Engine) Run(ctx context.Context, input string) (*EngineOutput, error) {
 				continue
 			}
 
+			step++
+			model := node.Model.Name
+			if model == "" {
+				model = "default"
+			}
+			log.Println("╠──────────────────────────────────────────────────────────────")
+			log.Printf("║ [%d] NODE: %s (%s)", step, nodeID, node.Type)
+			log.Printf("║     Model: %s", model)
+			if len(node.Tools) > 0 {
+				log.Printf("║     Tools: %v", node.Tools)
+			}
+
 			nodeInput := e.buildNodeInput(nodeID, execCtx)
+			nodeStart := time.Now()
 			output, err := e.executor.Execute(ctx, node, nodeInput)
+			nodeEnd := time.Now()
+
 			if err != nil {
+				log.Printf("║     ✗ Error: %v", err)
+				log.Println("╚══════════════════════════════════════════════════════════════")
 				return &EngineOutput{
 					Success:  false,
 					Error:    err,
 					Outputs:  outputs,
+					Spans:    spans,
 					Duration: time.Since(start),
 				}, err
 			}
+
+			log.Printf("║     ✓ Completed in %v", nodeEnd.Sub(nodeStart))
+			log.Printf("║     ← Response: %d chars, %d/%d tokens", len(output.Content), output.TokensIn, output.TokensOut)
+
+			step++
+			spans = append(spans, Span{
+				SpanID:       fmt.Sprintf("span_%d", step),
+				NodeID:       nodeID,
+				NodeType:     string(node.Type),
+				StartTime:    nodeStart.UnixMilli(),
+				EndTime:      nodeEnd.UnixMilli(),
+				Input:        nodeInput.Content,
+				Output:       output.Content,
+				InputTokens:  output.TokensIn,
+				OutputTokens: output.TokensOut,
+				Duration:     nodeEnd.Sub(nodeStart),
+			})
 
 			outputs[nodeID] = output
 			execCtx.AddOutput(output)
@@ -110,11 +154,17 @@ func (e *Engine) Run(ctx context.Context, input string) (*EngineOutput, error) {
 	}
 
 	finalOutput := e.findFinalOutput(execCtx)
+	log.Println("╠══════════════════════════════════════════════════════════════")
+	log.Printf("║ Pipeline complete in %v", time.Since(start))
+	log.Printf("║ Output: %d chars", len(finalOutput.Content))
+	log.Println("╚══════════════════════════════════════════════════════════════")
+
 	return &EngineOutput{
 		Success:   true,
 		FinalNode: finalOutput.NodeID,
 		Content:   finalOutput.Content,
 		Outputs:   outputs,
+		Spans:     spans,
 		Duration:  time.Since(start),
 	}, nil
 }

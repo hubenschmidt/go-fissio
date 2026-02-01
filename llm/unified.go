@@ -49,6 +49,26 @@ func (u *UnifiedClient) ChatWithMessages(ctx context.Context, model string, syst
 	return client.ChatWithMessages(ctx, resolvedModel, system, msgs)
 }
 
+func (u *UnifiedClient) ChatStreamWithMessages(ctx context.Context, model string, system string, msgs []Message) (<-chan StreamChunk, error) {
+	client, resolvedModel := u.resolveClient(model)
+	if sc, ok := client.(*OpenAIClient); ok {
+		return sc.ChatStreamWithMessages(ctx, resolvedModel, system, msgs)
+	}
+	// Fallback: non-streaming response wrapped in channel
+	ch := make(chan StreamChunk, 1)
+	go func() {
+		defer close(ch)
+		resp, err := client.ChatWithMessages(ctx, resolvedModel, system, msgs)
+		if err != nil {
+			ch <- StreamChunk{Error: err, Done: true}
+			return
+		}
+		ch <- StreamChunk{Content: resp.Content}
+		ch <- StreamChunk{Done: true, Usage: &resp.Usage}
+	}()
+	return ch, nil
+}
+
 func (u *UnifiedClient) ChatWithTools(ctx context.Context, model string, system string, msgs []core.Message, tools []core.ToolSchema, pending []core.ToolResult) (*ChatResponse, error) {
 	client, resolvedModel := u.resolveClient(model)
 	return client.ChatWithTools(ctx, resolvedModel, system, msgs, tools, pending)

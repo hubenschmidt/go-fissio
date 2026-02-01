@@ -19,11 +19,26 @@ type NodeOutput struct {
 	Duration  time.Duration  `json:"duration,omitempty"`
 }
 
+type Span struct {
+	SpanID        string        `json:"span_id"`
+	NodeID        string        `json:"node_id"`
+	NodeType      string        `json:"node_type"`
+	StartTime     int64         `json:"start_time"`
+	EndTime       int64         `json:"end_time"`
+	Input         string        `json:"input"`
+	Output        string        `json:"output"`
+	InputTokens   int           `json:"input_tokens"`
+	OutputTokens  int           `json:"output_tokens"`
+	ToolCallCount int           `json:"tool_call_count"`
+	Duration      time.Duration `json:"duration"`
+}
+
 type EngineOutput struct {
 	Success   bool                  `json:"success"`
 	FinalNode string                `json:"final_node"`
 	Content   string                `json:"content"`
 	Outputs   map[string]NodeOutput `json:"outputs"`
+	Spans     []Span                `json:"spans"`
 	Error     error                 `json:"error,omitempty"`
 	Duration  time.Duration         `json:"duration"`
 }

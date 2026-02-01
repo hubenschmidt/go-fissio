@@ -1,12 +1,14 @@
 package llm
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/hubenschmidt/go-fissio/core"
@@ -207,4 +209,96 @@ type openAIToolCall struct {
 		Name      string `json:"name"`
 		Arguments string `json:"arguments"`
 	} `json:"function"`
+}
+
+func (c *OpenAIClient) ChatStreamWithMessages(ctx context.Context, model string, system string, msgs []Message) (<-chan StreamChunk, error) {
+	coreMsgs := make([]core.Message, len(msgs))
+	for i, m := range msgs {
+		coreMsgs[i] = core.Message{Role: core.MessageRole(m.Role), Content: m.Content}
+	}
+
+	messages := c.buildMessages(system, coreMsgs, nil)
+
+	reqBody := map[string]any{
+		"model":    model,
+		"messages": messages,
+		"stream":   true,
+	}
+
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody))
+	}
+
+	ch := make(chan StreamChunk)
+	go c.readStream(resp, ch)
+	return ch, nil
+}
+
+func (c *OpenAIClient) readStream(resp *http.Response, ch chan<- StreamChunk) {
+	defer resp.Body.Close()
+	defer close(ch)
+
+	reader := bufio.NewReader(resp.Body)
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err != io.EOF {
+				ch <- StreamChunk{Error: err, Done: true}
+			} else {
+				ch <- StreamChunk{Done: true}
+			}
+			return
+		}
+
+		line = strings.TrimSpace(line)
+		if line == "" || line == "data: [DONE]" {
+			if line == "data: [DONE]" {
+				ch <- StreamChunk{Done: true}
+				return
+			}
+			continue
+		}
+
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+
+		data := strings.TrimPrefix(line, "data: ")
+		var chunk openAIStreamChunk
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			continue
+		}
+
+		if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
+			ch <- StreamChunk{Content: chunk.Choices[0].Delta.Content}
+		}
+	}
+}
+
+type openAIStreamChunk struct {
+	Choices []struct {
+		Delta struct {
+			Content string `json:"content"`
+		} `json:"delta"`
+	} `json:"choices"`
 }

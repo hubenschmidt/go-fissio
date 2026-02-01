@@ -15,10 +15,15 @@ func main() {
 		OllamaURL:    getEnvOr("OLLAMA_URL", "http://localhost:11434/v1"),
 	})
 
-	srv := fissio.NewServer(fissio.ServerConfig{
-		Client:    client,
-		OllamaURL: getEnvOr("OLLAMA_URL", "http://localhost:11434"),
+	srv, err := fissio.NewServer(fissio.ServerConfig{
+		Client:      client,
+		OllamaURL:   getEnvOr("OLLAMA_URL", "http://localhost:11434"),
+		DatabaseDSN: os.Getenv("DATABASE_URL"),
 	})
+	if err != nil {
+		log.Fatalf("Failed to create server: %v", err)
+	}
+	defer srv.Close()
 
 	// In dev mode (DEV=1), serve only API - client runs separately on :3001
 	// In prod mode, serve embedded editor at /
@@ -31,7 +36,7 @@ func main() {
 	}
 
 	addr := getEnvOr("ADDR", ":8000")
-	log.Printf("Starting fissio server on http://localhost:%s", addr)
+	log.Printf("Starting fissio server on http://localhost%s", addr)
 	log.Fatal(http.ListenAndServe(addr, handler))
 }
 
