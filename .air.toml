@@ -1,0 +1,16 @@
+# Air hot-reload configuration
+root = "."
+tmp_dir = "tmp"
+
+[build]
+cmd = "go build -o ./tmp/fissio-server ./cmd/fissio-server"
+bin = "./tmp/fissio-server"
+include_ext = ["go"]
+exclude_dir = ["tmp", "web", "editor/dist", "node_modules"]
+delay = 1000
+
+[log]
+time = false
+
+[misc]
+clean_on_exit = true

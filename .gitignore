@@ -1,0 +1,24 @@
+# Environment
+.env
+.env.local
+
+# Go
+tmp/
+
+# Node / SolidJS (dev only, not embedded assets)
+**/node_modules/
+web/client/dist/
+
+# Database
+**/data/*.db
+**/data/*.db-journal
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
