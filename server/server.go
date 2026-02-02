@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/hubenschmidt/go-fissio/llm"
 	"github.com/hubenschmidt/go-fissio/server/store"
 	"github.com/hubenschmidt/go-fissio/tools"
+	"github.com/hubenschmidt/go-fissio/vector"
 )
 
 // Config configures a new Server instance.
@@ -18,16 +20,21 @@ type Config struct {
 	Templates   []PipelineInfo
 	OllamaURL   string // Optional: URL for Ollama model discovery
 	DatabaseDSN string // Optional: database connection string (postgres:// or sqlite path)
+
+	// Vector store configuration
+	VectorStore vector.Store // Optional: inject custom vector store
+	EmbedModel  string       // Embedding model (default: text-embedding-3-small)
 }
 
 // Server is an HTTP server for the fissio agent framework.
 type Server struct {
-	client    llm.Client
-	registry  *tools.Registry
-	models    []ModelInfo
-	templates []PipelineInfo
-	pipelines store.PipelineStore
-	traces    store.TraceStore
+	client      llm.Client
+	registry    *tools.Registry
+	models      []ModelInfo
+	templates   []PipelineInfo
+	pipelines   store.PipelineStore
+	traces      store.TraceStore
+	vectorStore vector.Store
 }
 
 // New creates a new Server with the given configuration.
@@ -74,13 +81,43 @@ func New(cfg Config) (*Server, error) {
 
 	log.Printf("[store] Initialized database storage")
 
+	// Initialize vector store
+	var vectorStore vector.Store
+	if cfg.VectorStore != nil {
+		vectorStore = cfg.VectorStore
+	} else if strings.HasPrefix(cfg.DatabaseDSN, "postgres://") || strings.HasPrefix(cfg.DatabaseDSN, "postgresql://") {
+		vs, err := vector.NewPgVectorStore(cfg.DatabaseDSN, 1536)
+		if err != nil {
+			log.Printf("[vector] Failed to initialize pgvector: %v", err)
+		} else {
+			vectorStore = vs
+			log.Printf("[vector] Initialized pgvector store")
+		}
+	}
+	if vectorStore == nil {
+		vectorStore = vector.NewMemoryStore()
+		log.Printf("[vector] Using in-memory vector store")
+	}
+
+	// Register semantic search tools if we have an embedding client
+	if embedder, ok := cfg.Client.(llm.EmbeddingClient); ok {
+		embedModel := cfg.EmbedModel
+		if embedModel == "" {
+			embedModel = "text-embedding-3-small"
+		}
+		registry.Register(tools.NewSimilaritySearchTool(vectorStore, embedder, embedModel))
+		registry.Register(tools.NewIndexDocumentTool(vectorStore, embedder, embedModel))
+		log.Printf("[vector] Registered similarity_search and index_document tools (model: %s)", embedModel)
+	}
+
 	return &Server{
-		client:    cfg.Client,
-		registry:  registry,
-		models:    models,
-		templates: templates,
-		pipelines: pipelineStore,
-		traces:    traceStore,
+		client:      cfg.Client,
+		registry:    registry,
+		models:      models,
+		templates:   templates,
+		pipelines:   pipelineStore,
+		traces:      traceStore,
+		vectorStore: vectorStore,
 	}, nil
 }
 
@@ -92,6 +129,11 @@ func (s *Server) Close() error {
 	}
 	if err := s.pipelines.Close(); err != nil {
 		errs = append(errs, err)
+	}
+	if s.vectorStore != nil {
+		if err := s.vectorStore.Close(); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("close stores: %v", errs)

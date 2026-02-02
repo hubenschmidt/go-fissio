@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/hubenschmidt/go-fissio/config"
@@ -86,16 +87,13 @@ func (e *Engine) Run(ctx context.Context, input string) (*EngineOutput, error) {
 	for len(currentNodes) > 0 {
 		var nextNodes []string
 
-		for _, nodeID := range currentNodes {
-			if visited[nodeID] {
-				continue
-			}
-			visited[nodeID] = true
+		unvisitedNodes := filterNodes(currentNodes, func(id string) bool {
+			return !visited[id] && e.nodeMap[id] != nil
+		})
 
-			node, ok := e.nodeMap[nodeID]
-			if !ok {
-				continue
-			}
+		for _, nodeID := range unvisitedNodes {
+			visited[nodeID] = true
+			node := e.nodeMap[nodeID]
 
 			step++
 			model := node.Model.Name
@@ -188,23 +186,8 @@ func (e *Engine) findEntryNode() string {
 }
 
 func (e *Engine) buildNodeInput(nodeID string, ctx *ExecutionContext) NodeInput {
-	var sources []string
-	var content string
-
-	for from, tos := range e.edges {
-		for _, to := range tos {
-			if to != nodeID {
-				continue
-			}
-			sources = append(sources, from)
-			if out, ok := ctx.GetOutput(from); ok {
-				if content != "" {
-					content += "\n\n"
-				}
-				content += out.Content
-			}
-		}
-	}
+	sources := e.findSourceNodes(nodeID)
+	content := e.buildContentFromSources(sources, ctx)
 
 	if content == "" {
 		content = ctx.Input.Content
@@ -215,6 +198,38 @@ func (e *Engine) buildNodeInput(nodeID string, ctx *ExecutionContext) NodeInput 
 		Content: content,
 		Sources: sources,
 	}
+}
+
+func (e *Engine) findSourceNodes(nodeID string) []string {
+	var sources []string
+	for from, tos := range e.edges {
+		for _, to := range tos {
+			if to == nodeID {
+				sources = append(sources, from)
+			}
+		}
+	}
+	return sources
+}
+
+func (e *Engine) buildContentFromSources(sources []string, ctx *ExecutionContext) string {
+	var parts []string
+	for _, from := range sources {
+		if out, ok := ctx.GetOutput(from); ok {
+			parts = append(parts, out.Content)
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func filterNodes(nodes []string, predicate func(string) bool) []string {
+	result := make([]string, 0, len(nodes))
+	for _, n := range nodes {
+		if predicate(n) {
+			result = append(result, n)
+		}
+	}
+	return result
 }
 
 func (e *Engine) getNextNodes(nodeID string, output NodeOutput) []string {

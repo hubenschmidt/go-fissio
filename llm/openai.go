@@ -262,37 +262,46 @@ func (c *OpenAIClient) readStream(resp *http.Response, ch chan<- StreamChunk) {
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
-			if err != io.EOF {
-				ch <- StreamChunk{Error: err, Done: true}
-			} else {
-				ch <- StreamChunk{Done: true}
-			}
+			ch <- c.handleStreamEOF(err)
 			return
 		}
 
-		line = strings.TrimSpace(line)
-		if line == "" || line == "data: [DONE]" {
-			if line == "data: [DONE]" {
-				ch <- StreamChunk{Done: true}
-				return
-			}
-			continue
+		done, chunk := c.processStreamLine(strings.TrimSpace(line))
+		if done {
+			ch <- StreamChunk{Done: true}
+			return
 		}
-
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-
-		data := strings.TrimPrefix(line, "data: ")
-		var chunk openAIStreamChunk
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			continue
-		}
-
-		if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
-			ch <- StreamChunk{Content: chunk.Choices[0].Delta.Content}
+		if chunk != nil {
+			ch <- *chunk
 		}
 	}
+}
+
+func (c *OpenAIClient) handleStreamEOF(err error) StreamChunk {
+	if err != io.EOF {
+		return StreamChunk{Error: err, Done: true}
+	}
+	return StreamChunk{Done: true}
+}
+
+func (c *OpenAIClient) processStreamLine(line string) (done bool, chunk *StreamChunk) {
+	if line == "data: [DONE]" {
+		return true, nil
+	}
+	if line == "" || !strings.HasPrefix(line, "data: ") {
+		return false, nil
+	}
+
+	data := strings.TrimPrefix(line, "data: ")
+	var parsed openAIStreamChunk
+	if err := json.Unmarshal([]byte(data), &parsed); err != nil {
+		return false, nil
+	}
+
+	if len(parsed.Choices) > 0 && parsed.Choices[0].Delta.Content != "" {
+		return false, &StreamChunk{Content: parsed.Choices[0].Delta.Content}
+	}
+	return false, nil
 }
 
 type openAIStreamChunk struct {
@@ -301,4 +310,76 @@ type openAIStreamChunk struct {
 			Content string `json:"content"`
 		} `json:"delta"`
 	} `json:"choices"`
+}
+
+// Embed generates an embedding for a single input.
+func (c *OpenAIClient) Embed(ctx context.Context, model, input string) (*EmbeddingResponse, error) {
+	results, err := c.EmbedBatch(ctx, model, []string{input})
+	if err != nil {
+		return nil, err
+	}
+	if len(results) == 0 {
+		return nil, fmt.Errorf("no embedding returned")
+	}
+	return &results[0], nil
+}
+
+// EmbedBatch generates embeddings for multiple inputs.
+func (c *OpenAIClient) EmbedBatch(ctx context.Context, model string, inputs []string) ([]EmbeddingResponse, error) {
+	reqBody := map[string]any{
+		"model": model,
+		"input": inputs,
+	}
+
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/embeddings", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody))
+	}
+
+	var result openAIEmbeddingResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	embeddings := make([]EmbeddingResponse, len(result.Data))
+	for i, d := range result.Data {
+		embeddings[i] = EmbeddingResponse{
+			Embedding:  d.Embedding,
+			TokenCount: result.Usage.PromptTokens / len(inputs), // approximate per-input tokens
+		}
+	}
+
+	return embeddings, nil
+}
+
+type openAIEmbeddingResponse struct {
+	Data []struct {
+		Embedding []float64 `json:"embedding"`
+		Index     int       `json:"index"`
+	} `json:"data"`
+	Usage struct {
+		PromptTokens int `json:"prompt_tokens"`
+		TotalTokens  int `json:"total_tokens"`
+	} `json:"usage"`
 }

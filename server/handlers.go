@@ -40,14 +40,13 @@ func (s *Server) handleTools(w http.ResponseWriter, r *http.Request) {
 
 	for _, name := range names {
 		t, ok := s.registry.Get(name)
-		if !ok {
-			continue
+		if ok {
+			result = append(result, ToolInfo{
+				Name:        t.Name(),
+				Description: t.Description(),
+				Parameters:  t.Parameters(),
+			})
 		}
-		result = append(result, ToolInfo{
-			Name:        t.Name(),
-			Description: t.Description(),
-			Parameters:  t.Parameters(),
-		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -212,21 +211,7 @@ func (s *Server) handleDirectChat(w http.ResponseWriter, r *http.Request, req Ch
 		return
 	}
 
-	var fullContent string
-	var usage llm.Usage
-	for chunk := range stream {
-		if chunk.Error != nil {
-			writeSSE(w, flusher, "stream", map[string]any{"content": "Error: " + chunk.Error.Error()})
-			break
-		}
-		if chunk.Content != "" {
-			fullContent += chunk.Content
-			writeSSE(w, flusher, "stream", map[string]any{"content": chunk.Content})
-		}
-		if chunk.Usage != nil {
-			usage = *chunk.Usage
-		}
-	}
+	fullContent, usage := s.processStreamChunks(w, flusher, stream)
 
 	elapsed := time.Since(start)
 
@@ -428,6 +413,25 @@ func corsMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (s *Server) processStreamChunks(w http.ResponseWriter, flusher http.Flusher, stream <-chan llm.StreamChunk) (string, llm.Usage) {
+	var fullContent string
+	var usage llm.Usage
+	for chunk := range stream {
+		if chunk.Error != nil {
+			writeSSE(w, flusher, "stream", map[string]any{"content": "Error: " + chunk.Error.Error()})
+			return fullContent, usage
+		}
+		if chunk.Content != "" {
+			fullContent += chunk.Content
+			writeSSE(w, flusher, "stream", map[string]any{"content": chunk.Content})
+		}
+		if chunk.Usage != nil {
+			usage = *chunk.Usage
+		}
+	}
+	return fullContent, usage
 }
 
 var _ llm.Client = (*llm.UnifiedClient)(nil)

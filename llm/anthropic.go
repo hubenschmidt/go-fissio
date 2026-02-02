@@ -113,43 +113,50 @@ func (c *AnthropicClient) ChatWithTools(ctx context.Context, model string, syste
 func (c *AnthropicClient) buildMessages(msgs []core.Message, pending []core.ToolResult) []map[string]any {
 	messages := make([]map[string]any, 0, len(msgs)+len(pending))
 
-	for _, m := range msgs {
-		if m.Role == core.RoleSystem {
-			continue
-		}
+	nonSystemMsgs := filterMessages(msgs, func(m core.Message) bool {
+		return m.Role != core.RoleSystem
+	})
 
-		role := string(m.Role)
-		if m.Role == core.RoleTool {
-			role = "user"
-			messages = append(messages, map[string]any{
-				"role": role,
-				"content": []map[string]any{{
-					"type":        "tool_result",
-					"tool_use_id": m.ToolCallID,
-					"content":     m.Content,
-				}},
-			})
-			continue
-		}
-
-		messages = append(messages, map[string]any{
-			"role":    role,
-			"content": m.Content,
-		})
+	for _, m := range nonSystemMsgs {
+		messages = append(messages, c.convertMessage(m))
 	}
 
 	for _, p := range pending {
-		messages = append(messages, map[string]any{
-			"role": "user",
-			"content": []map[string]any{{
-				"type":        "tool_result",
-				"tool_use_id": p.ToolCallID,
-				"content":     p.Content,
-			}},
-		})
+		messages = append(messages, c.toolResultMessage(p.ToolCallID, p.Content))
 	}
 
 	return messages
+}
+
+func (c *AnthropicClient) convertMessage(m core.Message) map[string]any {
+	if m.Role == core.RoleTool {
+		return c.toolResultMessage(m.ToolCallID, m.Content)
+	}
+	return map[string]any{
+		"role":    string(m.Role),
+		"content": m.Content,
+	}
+}
+
+func (c *AnthropicClient) toolResultMessage(toolCallID, content string) map[string]any {
+	return map[string]any{
+		"role": "user",
+		"content": []map[string]any{{
+			"type":        "tool_result",
+			"tool_use_id": toolCallID,
+			"content":     content,
+		}},
+	}
+}
+
+func filterMessages(msgs []core.Message, predicate func(core.Message) bool) []core.Message {
+	result := make([]core.Message, 0, len(msgs))
+	for _, m := range msgs {
+		if predicate(m) {
+			result = append(result, m)
+		}
+	}
+	return result
 }
 
 func (c *AnthropicClient) buildTools(tools []core.ToolSchema) []map[string]any {
@@ -174,22 +181,31 @@ func (c *AnthropicClient) parseResponse(resp anthropicResponse) *ChatResponse {
 		},
 	}
 
+	blockHandlers := map[string]func(*ChatResponse, anthropicBlock){
+		"text":     c.handleTextBlock,
+		"tool_use": c.handleToolUseBlock,
+	}
+
 	for _, block := range resp.Content {
-		if block.Type == "text" {
-			result.Content += block.Text
-			continue
-		}
-		if block.Type == "tool_use" {
-			inputBytes, _ := json.Marshal(block.Input)
-			result.ToolCalls = append(result.ToolCalls, core.ToolCall{
-				ID:        block.ID,
-				Name:      block.Name,
-				Arguments: inputBytes,
-			})
+		if handler, ok := blockHandlers[block.Type]; ok {
+			handler(result, block)
 		}
 	}
 
 	return result
+}
+
+func (c *AnthropicClient) handleTextBlock(result *ChatResponse, block anthropicBlock) {
+	result.Content += block.Text
+}
+
+func (c *AnthropicClient) handleToolUseBlock(result *ChatResponse, block anthropicBlock) {
+	inputBytes, _ := json.Marshal(block.Input)
+	result.ToolCalls = append(result.ToolCalls, core.ToolCall{
+		ID:        block.ID,
+		Name:      block.Name,
+		Arguments: inputBytes,
+	})
 }
 
 type anthropicResponse struct {

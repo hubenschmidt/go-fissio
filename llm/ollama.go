@@ -1,9 +1,11 @@
 package llm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"regexp"
 	"strings"
@@ -84,4 +86,89 @@ func formatDisplayName(name string) string {
 		base = strings.ToUpper(base[:1]) + base[1:]
 	}
 	return fmt.Sprintf("%s (Ollama)", base)
+}
+
+// OllamaEmbedClient handles Ollama-native embedding API.
+type OllamaEmbedClient struct {
+	baseURL string
+	client  *http.Client
+}
+
+// NewOllamaEmbedClient creates a client for Ollama's native embedding API.
+func NewOllamaEmbedClient(baseURL string) *OllamaEmbedClient {
+	host := strings.TrimSuffix(baseURL, "/")
+	host = strings.TrimSuffix(host, "/v1")
+	return &OllamaEmbedClient{
+		baseURL: host,
+		client:  &http.Client{Timeout: 60 * time.Second},
+	}
+}
+
+// Embed generates an embedding for a single input using Ollama's native API.
+func (c *OllamaEmbedClient) Embed(ctx context.Context, model, input string) (*EmbeddingResponse, error) {
+	results, err := c.EmbedBatch(ctx, model, []string{input})
+	if err != nil {
+		return nil, err
+	}
+	if len(results) == 0 {
+		return nil, fmt.Errorf("no embedding returned")
+	}
+	return &results[0], nil
+}
+
+// EmbedBatch generates embeddings for multiple inputs using Ollama's native API.
+func (c *OllamaEmbedClient) EmbedBatch(ctx context.Context, model string, inputs []string) ([]EmbeddingResponse, error) {
+	results := make([]EmbeddingResponse, 0, len(inputs))
+
+	// Ollama's /api/embed endpoint processes one input at a time
+	for _, input := range inputs {
+		reqBody := map[string]any{
+			"model": model,
+			"input": input,
+		}
+
+		body, err := json.Marshal(reqBody)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal request: %w", err)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/embed", bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := c.client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("request failed: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			respBody, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return nil, fmt.Errorf("Ollama API error (status %d): %s", resp.StatusCode, string(respBody))
+		}
+
+		var result ollamaEmbedResponse
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("failed to decode response: %w", err)
+		}
+		resp.Body.Close()
+
+		if len(result.Embeddings) == 0 {
+			return nil, fmt.Errorf("no embeddings in response")
+		}
+
+		results = append(results, EmbeddingResponse{
+			Embedding:  result.Embeddings[0],
+			TokenCount: 0, // Ollama doesn't report token counts
+		})
+	}
+
+	return results, nil
+}
+
+type ollamaEmbedResponse struct {
+	Embeddings [][]float64 `json:"embeddings"`
 }

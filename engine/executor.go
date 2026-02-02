@@ -122,21 +122,23 @@ func (e *Executor) executeToolCalls(ctx context.Context, calls []core.ToolCall, 
 
 	results := make([]core.ToolResult, len(calls))
 	for i, call := range calls {
-		tool, ok := toolMap[call.Name]
-		if !ok {
-			results[i] = core.NewToolError(call.ID, fmt.Sprintf("tool not found: %s", call.Name))
-			continue
-		}
-
-		result, err := tool.Execute(ctx, call.Arguments)
-		if err != nil {
-			results[i] = core.NewToolError(call.ID, err.Error())
-			continue
-		}
-		results[i] = core.NewToolResult(call.ID, result)
+		results[i] = e.executeSingleToolCall(ctx, call, toolMap)
 	}
 
 	return results
+}
+
+func (e *Executor) executeSingleToolCall(ctx context.Context, call core.ToolCall, toolMap map[string]tools.Tool) core.ToolResult {
+	tool, ok := toolMap[call.Name]
+	if !ok {
+		return core.NewToolError(call.ID, fmt.Sprintf("tool not found: %s", call.Name))
+	}
+
+	result, err := tool.Execute(ctx, call.Arguments)
+	if err != nil {
+		return core.NewToolError(call.ID, err.Error())
+	}
+	return core.NewToolResult(call.ID, result)
 }
 
 func (e *Executor) executeRouter(ctx context.Context, node *config.NodeConfig, input NodeInput) (NodeOutput, error) {

@@ -30,6 +30,7 @@ import (
 	"github.com/hubenschmidt/go-fissio/monitor"
 	"github.com/hubenschmidt/go-fissio/server"
 	"github.com/hubenschmidt/go-fissio/tools"
+	"github.com/hubenschmidt/go-fissio/vector"
 )
 
 // Re-export node types for convenience
@@ -133,4 +134,21 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 // EditorHandler returns an http.Handler that serves the embedded editor UI.
 func EditorHandler() http.Handler {
 	return editor.Handler()
+}
+
+// Vector store aliases
+type (
+	VectorStore        = vector.Store
+	VectorDocument     = vector.Document
+	VectorSearchResult = vector.SearchResult
+)
+
+// NewMemoryVectorStore creates a new in-memory vector store.
+func NewMemoryVectorStore() *vector.MemoryStore {
+	return vector.NewMemoryStore()
+}
+
+// NewPgVectorStore creates a new pgvector-based vector store.
+func NewPgVectorStore(dsn string, dimension int) (*vector.PgVectorStore, error) {
+	return vector.NewPgVectorStore(dsn, dimension)
 }

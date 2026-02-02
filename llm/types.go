@@ -37,3 +37,9 @@ type StreamChunk struct {
 func (r *ChatResponse) HasToolCalls() bool {
 	return len(r.ToolCalls) > 0
 }
+
+// EmbeddingResponse represents a single embedding result.
+type EmbeddingResponse struct {
+	Embedding  []float64 `json:"embedding"`
+	TokenCount int       `json:"token_count"`
+}

@@ -2,15 +2,17 @@ package llm
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/hubenschmidt/go-fissio/core"
 )
 
 type UnifiedClient struct {
-	openai    *OpenAIClient
-	anthropic *AnthropicClient
-	ollama    *OpenAIClient
+	openai      *OpenAIClient
+	anthropic   *AnthropicClient
+	ollama      *OpenAIClient
+	ollamaEmbed *OllamaEmbedClient
 }
 
 type UnifiedConfig struct {
@@ -34,6 +36,7 @@ func NewUnifiedClient(cfg UnifiedConfig) *UnifiedClient {
 		u.ollama = NewOpenAIClientWithConfig(ClientConfig{
 			BaseURL: cfg.OllamaURL,
 		})
+		u.ollamaEmbed = NewOllamaEmbedClient(cfg.OllamaURL)
 	}
 
 	return u
@@ -75,41 +78,38 @@ func (u *UnifiedClient) ChatWithTools(ctx context.Context, model string, system 
 }
 
 func (u *UnifiedClient) resolveClient(model string) (Client, string) {
-	prefixMap := map[string]struct {
+	prefixes := []struct {
+		prefix string
 		client Client
 		strip  bool
 	}{
-		"claude-":  {u.anthropic, false},
-		"gpt-":     {u.openai, false},
-		"o1-":      {u.openai, false},
-		"ollama/":  {u.ollama, true},
+		{"claude-", u.anthropic, false},
+		{"gpt-", u.openai, false},
+		{"o1-", u.openai, false},
+		{"ollama/", u.ollama, true},
 	}
 
-	for prefix, cfg := range prefixMap {
-		if !strings.HasPrefix(model, prefix) {
-			continue
+	for _, p := range prefixes {
+		if strings.HasPrefix(model, p.prefix) && p.client != nil {
+			resolvedModel := model
+			if p.strip {
+				resolvedModel = strings.TrimPrefix(model, p.prefix)
+			}
+			return p.client, resolvedModel
 		}
-		if cfg.client == nil {
-			continue
-		}
-		resolvedModel := model
-		if cfg.strip {
-			resolvedModel = strings.TrimPrefix(model, prefix)
-		}
-		return cfg.client, resolvedModel
 	}
 
-	if u.openai != nil {
-		return u.openai, model
-	}
-	if u.anthropic != nil {
-		return u.anthropic, model
-	}
-	if u.ollama != nil {
-		return u.ollama, model
-	}
+	return u.defaultClient(), model
+}
 
-	return nil, model
+func (u *UnifiedClient) defaultClient() Client {
+	clients := []Client{u.openai, u.anthropic, u.ollama}
+	for _, c := range clients {
+		if c != nil {
+			return c
+		}
+	}
+	return nil
 }
 
 func (u *UnifiedClient) HasOpenAI() bool {
@@ -122,4 +122,52 @@ func (u *UnifiedClient) HasAnthropic() bool {
 
 func (u *UnifiedClient) HasOllama() bool {
 	return u.ollama != nil
+}
+
+// Embed generates an embedding for a single input.
+func (u *UnifiedClient) Embed(ctx context.Context, model, input string) (*EmbeddingResponse, error) {
+	client, resolvedModel := u.resolveEmbeddingClient(model)
+	if client == nil {
+		return nil, fmt.Errorf("no embedding client available for model: %s", model)
+	}
+	return client.Embed(ctx, resolvedModel, input)
+}
+
+// EmbedBatch generates embeddings for multiple inputs.
+func (u *UnifiedClient) EmbedBatch(ctx context.Context, model string, inputs []string) ([]EmbeddingResponse, error) {
+	client, resolvedModel := u.resolveEmbeddingClient(model)
+	if client == nil {
+		return nil, fmt.Errorf("no embedding client available for model: %s", model)
+	}
+	return client.EmbedBatch(ctx, resolvedModel, inputs)
+}
+
+func (u *UnifiedClient) resolveEmbeddingClient(model string) (EmbeddingClient, string) {
+	// Ollama embedding models
+	if strings.HasPrefix(model, "ollama/") {
+		if u.ollamaEmbed == nil {
+			return nil, model
+		}
+		return u.ollamaEmbed, strings.TrimPrefix(model, "ollama/")
+	}
+
+	// OpenAI embedding models (text-embedding-3-small, text-embedding-3-large, etc.)
+	if strings.HasPrefix(model, "text-embedding-") {
+		if u.openai == nil {
+			return nil, model
+		}
+		return u.openai, model
+	}
+
+	// Default to OpenAI for unknown embedding models
+	if u.openai != nil {
+		return u.openai, model
+	}
+
+	// Fall back to Ollama if OpenAI not available
+	if u.ollamaEmbed != nil {
+		return u.ollamaEmbed, model
+	}
+
+	return nil, model
 }

@@ -18,6 +18,12 @@ type StreamClient interface {
 	ChatStreamWithMessages(ctx context.Context, model string, system string, msgs []Message) (<-chan StreamChunk, error)
 }
 
+// EmbeddingClient generates vector embeddings from text.
+type EmbeddingClient interface {
+	Embed(ctx context.Context, model, input string) (*EmbeddingResponse, error)
+	EmbedBatch(ctx context.Context, model string, inputs []string) ([]EmbeddingResponse, error)
+}
+
 type ClientConfig struct {
 	APIKey      string
 	BaseURL     string
