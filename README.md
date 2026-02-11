@@ -2,6 +2,8 @@
 
 A Go framework for building agentic LLM pipelines with RAG support.
 
+![Research Assistant](spec/screenshots/research_assistant.png)
+
 ## Features
 
 - **Visual Pipeline Editor** — Drag-and-drop node configuration
